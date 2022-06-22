@@ -9,3 +9,7 @@ CUDA_VISIBLE_DEVICES=X nohup python3 -u eval.py --path XXX --test figer_data/pro
 
 Figon: *
 CUDA_VISIBLE_DEVICES=X nohup python3 -u eval.py --path XXX --test figer_ontonotes_data/dev.json --batch 4 --check roberta-large-mnli &> XXX.out &
+
+## Downloading data files
+Unzipping the zip file;
+move the four directories inside the unzipped folder into the current directory without changing their names.
