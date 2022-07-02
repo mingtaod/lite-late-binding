@@ -16,7 +16,6 @@ import json
 from transformers import RobertaForSequenceClassification, RobertaConfig
 from transformers import AutoTokenizer, AdamW
 from base_model_large import ConcatMLP, FullModel
-from data_no_dependency import AltTypingDataset
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +56,9 @@ def train(args, train_dataset, model, tokenizer):
     margin_criterion = torch.nn.MarginRankingLoss(margin=args.margin).to(args.device)
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
+    ckpt = torch.load('output/late_bind_MLP_figon_lr1_finetune_stepwise/late_bind_MLP_figon_step1080000_03_28_06_Jun_25_2022', map_location='cuda:0')
+    optimizer.load_state_dict(ckpt['optimizer'])
+
     # Start Training
     logger.info("***** Starting training *****")
     logger.info("  Num examples = %d", len(train_dataset))
@@ -78,9 +80,8 @@ def train(args, train_dataset, model, tokenizer):
 
         for step, batch in enumerate(epoch_iterator):
             model.train()
-            # Modified 6/24
-            # premise_lst, entity_lst, pos_lst, pos_general_lst, pos_fine_lst, pos_ultrafine_lst = [list(item) for item in batch]
-            premise_lst, entity_lst, pos_lst = [list(item) for item in batch]
+            # Modified
+            premise_lst, entity_lst, pos_lst, pos_general_lst, pos_fine_lst, pos_ultrafine_lst = [list(item) for item in batch]
 
             dat_prem = []
             dat_hypo_true = []
@@ -94,9 +95,9 @@ def train(args, train_dataset, model, tokenizer):
                 premise = premise_lst[idx]
                 entity = entity_lst[idx]
                 label = pos_lst[idx]
-                # general = pos_general_lst[idx]
-                # fine = pos_fine_lst[idx]
-                # ultrafine = pos_ultrafine_lst[idx]
+                general = pos_general_lst[idx]
+                fine = pos_fine_lst[idx]
+                ultrafine = pos_ultrafine_lst[idx]
 
                 pos = random.sample(label, 1)[0]
                 neg = random.sample([tmp for tmp in train_dataset.label_lst if tmp not in pos_lst], 1)[0]
@@ -111,37 +112,37 @@ def train(args, train_dataset, model, tokenizer):
                 dat_hypo_false.append(neg_input_temp)
 
                 # dependency
-                # if pos in ultrafine:
-                #     try:
-                #         pos_father = random.sample(fine + general, 1)[0]
-                #     except:
-                #         continue
-                # elif pos in fine:
-                #     try:
-                #         pos_father = random.sample(general, 1)[0]
-                #     except:
-                #         continue
-                # else:  # true label is a general label
-                #     continue
+                if pos in ultrafine:
+                    try:
+                        pos_father = random.sample(fine + general, 1)[0]
+                    except:
+                        continue
+                elif pos in fine:
+                    try:
+                        pos_father = random.sample(general, 1)[0]
+                    except:
+                        continue
+                else:  # true label is a general label
+                    continue
 
                 # discuss about father
-                # if pos_father in fine:
-                #     pos_father_neg = random.sample([tmp for tmp in train_dataset.fine_lst if tmp not in label], 1)[0]
-                # elif pos_father in general:
-                #     pos_father_neg = random.sample([tmp for tmp in train_dataset.general_lst if tmp not in label], 1)[0]
-                # else:
-                #     continue
+                if pos_father in fine:
+                    pos_father_neg = random.sample([tmp for tmp in train_dataset.fine_lst if tmp not in label], 1)[0]
+                elif pos_father in general:
+                    pos_father_neg = random.sample([tmp for tmp in train_dataset.general_lst if tmp not in label], 1)[0]
+                else:
+                    continue
 
                 # depend_prem_temp = ' '.join([entity, 'is a', pos + '.'])
                 # depend_pos_input_temp = ' '.join([entity, 'is a', pos_father + '.'])
                 # depend_neg_input_temp = ' '.join([entity, 'is a', pos_father_neg + '.'])
-                # depend_prem_temp = ' '.join(['The mentioned entity is a', pos + '.'])
-                # depend_pos_input_temp = ' '.join(['The mentioned entity is a', pos_father + '.'])
-                # depend_neg_input_temp = ' '.join(['The mentioned entity is a', pos_father_neg + '.'])
+                depend_prem_temp = ' '.join(['The mentioned entity is a', pos + '.'])
+                depend_pos_input_temp = ' '.join(['The mentioned entity is a', pos_father + '.'])
+                depend_neg_input_temp = ' '.join(['The mentioned entity is a', pos_father_neg + '.'])
 
-                # depend_prem.append(depend_prem_temp)
-                # depend_hypo_true.append(depend_pos_input_temp)
-                # depend_hypo_false.append(depend_neg_input_temp)
+                depend_prem.append(depend_prem_temp)
+                depend_hypo_true.append(depend_pos_input_temp)
+                depend_hypo_false.append(depend_neg_input_temp)
 
             indicator = torch.tensor(np.ones(len(dat_prem), dtype=np.float32), requires_grad=False).to(args.device)
 
@@ -167,31 +168,31 @@ def train(args, train_dataset, model, tokenizer):
             loss = margin_criterion(output, output_false, indicator)
             indicator = None
 
-            # if depend_hypo_true:
-            #     indicator = torch.tensor(np.ones(len(depend_hypo_true), dtype=np.float32),
-            #                              requires_grad=False).to(args.device)
-            #     # true
-            #     input_ids_depend_prem, attn_mask_depend_prem = tokenizer(depend_prem, padding=True, return_tensors='pt').values()
-            #     input_ids_depend_hypo_true, attn_mask_depend_hypo_true = tokenizer(depend_hypo_true, padding=True, return_tensors='pt').values()
+            if depend_hypo_true:
+                indicator = torch.tensor(np.ones(len(depend_hypo_true), dtype=np.float32),
+                                         requires_grad=False).to(args.device)
+                # true
+                input_ids_depend_prem, attn_mask_depend_prem = tokenizer(depend_prem, padding=True, return_tensors='pt').values()
+                input_ids_depend_hypo_true, attn_mask_depend_hypo_true = tokenizer(depend_hypo_true, padding=True, return_tensors='pt').values()
 
-            #     input_ids_depend_prem = input_ids_depend_prem.to(args.device)
-            #     attn_mask_depend_prem = attn_mask_depend_prem.to(args.device)
-            #     input_ids_depend_hypo_true = input_ids_depend_hypo_true.to(args.device)
-            #     attn_mask_depend_hypo_true = attn_mask_depend_hypo_true.to(args.device)
+                input_ids_depend_prem = input_ids_depend_prem.to(args.device)
+                attn_mask_depend_prem = attn_mask_depend_prem.to(args.device)
+                input_ids_depend_hypo_true = input_ids_depend_hypo_true.to(args.device)
+                attn_mask_depend_hypo_true = attn_mask_depend_hypo_true.to(args.device)
 
-            #     output_depend = model(input_ids_depend_prem, input_ids_depend_hypo_true, attn_mask_depend_prem, attn_mask_depend_hypo_true)[:, -1]
+                output_depend = model(input_ids_depend_prem, input_ids_depend_hypo_true, attn_mask_depend_prem, attn_mask_depend_hypo_true)[:, -1]
 
-            #     # false
-            #     input_ids_depend_hypo_false, attn_mask_depend_hypo_false = tokenizer(depend_hypo_false, padding=True, return_tensors='pt').values()
+                # false
+                input_ids_depend_hypo_false, attn_mask_depend_hypo_false = tokenizer(depend_hypo_false, padding=True, return_tensors='pt').values()
                 
-            #     input_ids_depend_hypo_false = input_ids_depend_hypo_false.to(args.device)
-            #     attn_mask_depend_hypo_false = attn_mask_depend_hypo_false.to(args.device)
+                input_ids_depend_hypo_false = input_ids_depend_hypo_false.to(args.device)
+                attn_mask_depend_hypo_false = attn_mask_depend_hypo_false.to(args.device)
 
-            #     output_depend_false = model(input_ids_depend_prem, input_ids_depend_hypo_false, attn_mask_depend_prem, attn_mask_depend_hypo_false)[:, -1]
+                output_depend_false = model(input_ids_depend_prem, input_ids_depend_hypo_false, attn_mask_depend_prem, attn_mask_depend_hypo_false)[:, -1]
 
-            #     loss_depend = margin_criterion(output_depend, output_depend_false, indicator)
+                loss_depend = margin_criterion(output_depend, output_depend_false, indicator)
 
-            #     loss += args.lamb * loss_depend
+                loss += args.lamb * loss_depend
 
             # Added component for gradient accumulation
             loss = loss / accum_step_size
@@ -208,8 +209,9 @@ def train(args, train_dataset, model, tokenizer):
             if args.save_steps != 0 and local_step > 0 and local_step % args.save_steps == 0:
                 # -> switch ontonotes and figer according to the situation
                 # training_details = f'late_bind_MLP_figon_step{local_step}_{curr_time}'
-                training_details = f'late_bind_MLP_figer_step{local_step}_{curr_time}'
+                # training_details = f'late_bind_MLP_figer_step{local_step}_{curr_time}'
                 # training_details = f'late_bind_MLP_ontonotes_step{local_step}_{curr_time}'
+                training_details = f'late_bind_MLP_ufet_step{local_step}_{curr_time}'
                 MODEL_SAVING_PATH = os.path.join(args.output_dir, training_details)
                 saving_checkpoint = {
                     'model': model.state_dict(),
@@ -253,15 +255,17 @@ def main():
                         # Note: FIGER/ontonotes continual learning modified 5/25
                         # -> switch between the two lines
                         # default='/nas/home/mingtaod/codes/lite/figer_ontonotes_data',
-                        default='/nas/home/mingtaod/codes/lite/figer_data/processed',
+                        # default='/nas/home/mingtaod/codes/lite/figer_data/processed',
                         # default='/nas/home/mingtaod/codes/lite/ontonotes_data/processed',
+                        default='/nas/home/mingtaod/codes/lite/data',
                         help="The input data directory.")
     parser.add_argument("--output_dir",
                         type=str,
                         # -> switch between the two lines
                         # default='/nas/home/mingtaod/codes/lite/output/late_bind_MLP_figon_lr1_finetune_stepwise',
-                        default='/nas/home/mingtaod/codes/lite/output/late_bind_MLP_figer_lr1_finetune_stepwise',
+                        # default='/nas/home/mingtaod/codes/lite/output/late_bind_MLP_figer_lr1_finetune_stepwise',
                         # default='/nas/home/mingtaod/codes/lite/output/late_bind_MLP_ontonotes_lr1_finetune_stepwise',
+                        default='/nas/home/mingtaod/codes/lite/output/late_bind_MLP_ufet_lr1_finetune_stepwise',
                         help="The output directory where the model will be saved.")
     parser.add_argument("--train_batch_size",
                         # default=16,
@@ -275,7 +279,7 @@ def main():
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=100,
+                        default=2500,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument("--margin",
@@ -291,9 +295,10 @@ def main():
                         # figer + ontonotes: approx. 542387
                         # default=180000,
                         # figer: approx. 480473
-                        default=160000,
+                        # default=160000,
                         # ontonotes: approx. 61914
                         # default=30000,
+                        default=25000, # 500 steps/epoch * 50 epochs = 25000
                         type=int,
                         help="Save checkpoint every X epochs of training")
     parser.add_argument("--lamb",
@@ -326,7 +331,7 @@ def main():
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, which should be >= 1".format(
             args.gradient_accumulation_steps))
 
-    device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")  # To change the device, modify here
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")  # To change the device, modify here
     args.device = device
 
     # Setup logging
@@ -348,27 +353,25 @@ def main():
     batch_size = 2
 
     model = FullModel(linear_dim=linear_dim, batch_size=batch_size).to(device)
-    checkpoint = torch.load('pretrained_weights/weights_base_large_lr1/model_weights_epoch_27.ckpt', map_location='cuda:1')  # Note: 原来是0
-    model.load_state_dict(checkpoint)
+    # checkpoint = torch.load('pretrained_weights/weights_base_large_lr1/model_weights_epoch_27.ckpt', map_location='cuda:0')  # Note: 原来是0
+    checkpoint = torch.load('output/late_bind_MLP_figon_lr1_finetune_stepwise/late_bind_MLP_figon_step1080000_03_28_06_Jun_25_2022', map_location='cuda:0')
+    model.load_state_dict(checkpoint['model'])
 
     model.to(device)
-    logging.info(f'###\nModel Loaded to {torch.cuda.get_device_name(device)}, cuda:1')  # Note: 原来是0
+    logging.info(f'###\nModel Loaded to {torch.cuda.get_device_name(device)}, cuda:0')  # Note: 原来是0
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model)
 
     # training data
-    # train_dataset = TypingDataset(os.path.join(args.data_dir, "train_processed.json"), os.path.join(args.data_dir, "types.txt"))
+    train_dataset = TypingDataset(os.path.join(args.data_dir, "train_processed.json"), os.path.join(args.data_dir, "types.txt"))
     # Note: FIGER modified
     # -> switch between the two lines below
     # figer + ontonotes
     # train_dataset = TypingDataset(os.path.join(args.data_dir, "train.json"), os.path.join(args.data_dir, "compiled_types.txt"))
-    # train_dataset = AltTypingDataset(os.path.join(args.data_dir, "train.json"), os.path.join(args.data_dir, "figon_types.txt"))
     # figer
     # train_dataset = TypingDataset(os.path.join(args.data_dir, "train_processed.json"), os.path.join(args.data_dir, "compiled_types.txt"))
-    train_dataset = AltTypingDataset(os.path.join(args.data_dir, "train_processed.json"), os.path.join(args.data_dir, "figer_types.txt"))
     # ontonotes
     # Modified 6/24
     # train_dataset = TypingDataset(os.path.join(args.data_dir, "g_train_tree_processed.json"), os.path.join(args.data_dir, "compiled_types.txt"))
-    # train_dataset = AltTypingDataset(os.path.join(args.data_dir, "g_train_tree_processed.json"), os.path.join(args.data_dir, "ontonotes_types.txt"))
 
     # train
     train(args, train_dataset, model, tokenizer)
